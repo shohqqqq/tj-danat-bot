@@ -1,18 +1,25 @@
 # -*- coding: utf-8 -*-
 # TJ_Danat_bot.py — PRO VERSION
 # Requires: python-telegram-bot==13.15
-# Put your token into BOT_TOKEN (do NOT share it publicly)
+# Put your token into BOT_TOKEN environment variable (do NOT put token directly in code)
 
-import os, time, json, logging
+import os
+import time
+import json
+import logging
 from datetime import datetime
 from functools import wraps
 from threading import Lock
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler, CallbackContext
 
 # ---------------- CONFIG ----------------
-BOT_TOKEN = "8576789323:AAEu1zeU-Hlxhsu0k9uI5y8uSyXfdrP6qTI"   # <-- Tokenni shu yerga qo'y
-ADMIN_ID = 6281678077                 # <-- o'zgartirsang bo'ladi
+BOT_TOKEN = os.getenv("8576789323:AAEu1zeU-Hlxhsu0k9uI5y8uSyXfdrP6qTI")
+if not BOT_TOKEN:
+    raise RuntimeError("Set BOT_TOKEN environment variable before running the bot.")
+
+ADMIN_ID = 6281678077
 DATA_DIR = "data"
 USERS_FILE = os.path.join(DATA_DIR, "users.json")
 SALES_FILE = os.path.join(DATA_DIR, "sales.json")
@@ -28,9 +35,11 @@ SPAM_INTERVAL = 5
 if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR, exist_ok=True)
 
-logging.basicConfig(level=logging.INFO,
+logging.basicConfig(
+    level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
-    handlers=[logging.FileHandler(LOG_FILE, encoding="utf-8"), logging.StreamHandler()])
+    handlers=[logging.FileHandler(LOG_FILE, encoding="utf-8"), logging.StreamHandler()]
+)
 logger = logging.getLogger(__name__)
 
 # ---------------- Simple JSON DB ----------------
@@ -110,7 +119,6 @@ def lang_cb(update: Update, context: CallbackContext):
     lang = q.data.split("_")[-1] if "_" in q.data else "tj"
     if lang not in ("tj","uz","ru"): lang="tj"
     set_lang(q.from_user.id, lang)
-    # show main menu
     send_main_menu(q.from_user.id, context, welcome=True)
 
 def send_main_menu(uid, context: CallbackContext, welcome=False):
@@ -122,8 +130,10 @@ def send_main_menu(uid, context: CallbackContext, welcome=False):
         kb = ReplyKeyboardMarkup([["🛒 Almaz xaridi","🎫 Vaucherlar"],["📞 Support","🔁 /lang"]], resize_keyboard=True)
     else:
         kb = ReplyKeyboardMarkup([["🛒 Купить алмазы","🎫 Ваучеры"],["📞 Поддержка","🔁 /lang"]], resize_keyboard=True)
-    try: context.bot.send_message(chat_id=uid, text=text, reply_markup=kb)
-    except Exception as e: logger.exception("menu send err %s", e)
+    try:
+        context.bot.send_message(chat_id=uid, text=text, reply_markup=kb)
+    except Exception as e:
+        logger.exception("menu send err %s", e)
 
 # ---------------- Text handler (menus) ----------------
 @anti_spam
@@ -184,7 +194,7 @@ def send_package_detail(uid, context, code):
         kb = ReplyKeyboardMarkup([["📤 Отправил скриншот","🎫 Ваучер"],["🔙 Назад"]], resize_keyboard=True)
     context.bot.send_message(chat_id=uid, text=text, reply_markup=kb)
 
-def send_vouchers(uid, context):
+def send_vouchers(uid, context: CallbackContext):
     lang = get_lang(uid)
     set_last_action(uid,"vouchers_menu")
     if lang=="tj":
@@ -198,7 +208,7 @@ def send_vouchers(uid, context):
         kb = ReplyKeyboardMarkup([["🎫 1 неделя","🎫 1 месяц"],["🔙 Назад"]], resize_keyboard=True)
     context.bot.send_message(chat_id=uid, text=txt, reply_markup=kb)
 
-def send_voucher(uid, context, which):
+def send_voucher(uid, context: CallbackContext, which):
     set_last_action(uid, f"voucher_{which}")
     lang = get_lang(uid)
     price = VOUCHER_WEEK if which=="week" else VOUCHER_MONTH
@@ -320,5 +330,5 @@ def main():
     updater.start_polling()
     updater.idle()
 
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
