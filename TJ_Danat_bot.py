@@ -15,11 +15,11 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMa
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler, CallbackContext
 
 # ---------------- CONFIG ----------------
-BOT_TOKEN = os.getenv("8576789323:AAEu1zeU-Hlxhsu0k9uI5y8uSyXfdrP6qTI")
+BOT_TOKEN = os.getenv("9258175656:AAEOBaVPmPLFcKd_UAuHj_FDYLGzOFVu5HI")
 if not BOT_TOKEN:
     raise RuntimeError("Set BOT_TOKEN environment variable before running the bot.")
 
-ADMIN_ID = 6281678077
+ADMIN_ID = 7234237886
 DATA_DIR = "data"
 USERS_FILE = os.path.join(DATA_DIR, "users.json")
 SALES_FILE = os.path.join(DATA_DIR, "sales.json")
@@ -28,7 +28,7 @@ LOG_FILE = os.path.join(DATA_DIR, "bot.log")
 PRICES = {"100":11,"310":31,"520":53,"1060":103,"1270":43}
 VOUCHER_WEEK = 18
 VOUCHER_MONTH = 115
-PAY_NUMBER = "928139091"
+PAY_NUMBER = "783082010"
 SPAM_INTERVAL = 5
 
 # ---------------- Logging ----------------
