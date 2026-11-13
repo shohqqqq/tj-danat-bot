@@ -36,10 +36,35 @@ USERS_FILE = os.path.join(DATA_DIR, "users.json")
 SALES_FILE = os.path.join(DATA_DIR, "sales.json")
 LOG_FILE = os.path.join(DATA_DIR, "bot.log")
 
-PRICES = {"100": 11, "310": 31, "520": 53, "1060": 103, "1270": 43}
-VOUCHER_WEEK = 18
-VOUCHER_MONTH = 115
+# ---- Price list (edit prices here) ----
+DIAMONDS = {  # code: (price, label)
+    "25": (5, "25💎"),
+    "100": (11, "100 + 5💎"),
+    "310": (30, "310 + 16💎"),
+    "520": (50, "520 + 26💎"),
+    "1060": (100, "1060 + 53💎"),
+    "2180": (190, "2180 + 218💎"),
+    "5600": (465, "5600 + 560💎"),
+}
+VOUCHERS = {  # key: (price, label, period per language)
+    "mini": (7, "90💎", {"tj": "1 ҳафта mini", "uz": "1 hafta mini", "ru": "1 неделя mini"}),
+    "week": (16, "450💎", {"tj": "1 ҳафта", "uz": "1 hafta", "ru": "1 неделя"}),
+    "month": (110, "2600💎", {"tj": "1 моҳ", "uz": "1 oy", "ru": "1 месяц"}),
+}
+VOUCHER_BY_NUM = {"90": "mini", "450": "week", "2600": "month"}
+BR_CARD_PRICE = 50
+EVO = {"3": 10, "7": 13, "30": 36}  # days: price
 PAY_NUMBER = os.getenv("PAY_NUMBER", "")
+
+PRICE_BY_ACTION = {}
+for _c, (_p, _l) in DIAMONDS.items():
+    PRICE_BY_ACTION[f"buy_{_c}"] = _p
+for _k, (_p, _l, _per) in VOUCHERS.items():
+    PRICE_BY_ACTION[f"voucher_{_k}"] = _p
+PRICE_BY_ACTION["brcard"] = BR_CARD_PRICE
+for _d, _p in EVO.items():
+    PRICE_BY_ACTION[f"evo_{_d}"] = _p
+
 SPAM_INTERVAL = 3  # seconds, used only for /start and photos
 
 # ---------------- Logging ----------------
@@ -51,12 +76,51 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ---------------- Simple JSON DB ----------------
+# ---------------- Storage: Postgres (DATABASE_URL) or local JSON files ----------------
 lock = Lock()
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if DATABASE_URL:
+    import psycopg2
+
+
+def _db_exec(sql, params=(), fetch=False):
+    """Run one statement on a fresh connection. Retries because Neon may be waking up."""
+    last = None
+    for attempt in range(3):
+        try:
+            conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+            try:
+                with conn, conn.cursor() as cur:  # `with conn` commits on success
+                    cur.execute(sql, params)
+                    return cur.fetchone() if fetch else None
+            finally:
+                conn.close()
+        except Exception as e:
+            last = e
+            logger.warning("DB attempt %s failed: %s", attempt + 1, e)
+            time.sleep(1.5)
+    raise last
+
+
+def init_db():
+    if DATABASE_URL:
+        _db_exec("CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value JSONB NOT NULL)")
+        logger.info("Postgres storage ready")
+    else:
+        logger.warning("DATABASE_URL not set - using local JSON files (data is lost on Render restarts)")
 
 
 def read_json(path, default):
     with lock:
+        if DATABASE_URL:
+            key = os.path.basename(path)
+            row = _db_exec("SELECT value FROM kv WHERE key = %s", (key,), fetch=True)
+            if row is None:
+                _db_exec("INSERT INTO kv (key, value) VALUES (%s, %s::jsonb) ON CONFLICT (key) DO NOTHING",
+                         (key, json.dumps(default, ensure_ascii=False)))
+                return default
+            return row[0]
         if not os.path.exists(path):
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(default, f, ensure_ascii=False, indent=2)
@@ -70,12 +134,22 @@ def read_json(path, default):
 
 def write_json(path, data):
     with lock:
+        if DATABASE_URL:
+            key = os.path.basename(path)
+            try:
+                _db_exec("INSERT INTO kv (key, value) VALUES (%s, %s::jsonb) "
+                         "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+                         (key, json.dumps(data, ensure_ascii=False)))
+            except Exception:
+                logger.exception("DB write failed for %s (data kept in memory only)", key)
+            return
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         os.replace(tmp, path)
 
 
+init_db()
 users_db = read_json(USERS_FILE, {})
 sales_db = read_json(SALES_FILE, [])
 
@@ -117,6 +191,25 @@ TEXTS = {
     "photo_sent": {"tj": "⏳ Скриншот ба админ фиристода шуд. Тасдиқро интизор шавед (1-10 дақиқа).",
                    "uz": "⏳ Skrinshot adminga yuborildi. Tasdiqni kuting (1-10 daqiqa).",
                    "ru": "⏳ Скриншот отправлен админу. Ожидайте подтверждения (1-10 минут)."},
+    "ask_id": {"tj": "🎮 Free Fire ID-и худро (танҳо рақамҳо) нависед:",
+               "uz": "🎮 Free Fire ID raqamingizni (faqat raqamlar) yozing:",
+               "ru": "🎮 Введите ваш Free Fire ID (только цифры):"},
+    "bad_id": {"tj": "❌ ID нодуруст аст. Танҳо рақамҳо нависед (6–14 рақам) ё 🔙 пахш кунед.",
+               "uz": "❌ ID noto'g'ri. Faqat raqam yozing (6–14 ta) yoki 🔙 bosing.",
+               "ru": "❌ Неверный ID. Введите только цифры (6–14) или нажмите 🔙."},
+    "ask_nick": {"tj": "👤 Акнун Free Fire никнейми худро дар бозӣ чӣ тавр бошад, айнан нависед:",
+                 "uz": "👤 Endi Free Fire nikneymingizni o'yindagidek aynan yozing:",
+                 "ru": "👤 Теперь напишите ваш ник в Free Fire точно так, как в игре:"},
+    "bad_nick": {"tj": "❌ Никнейм 1–40 аломат бошад.", "uz": "❌ Nikneym 1–40 belgi bo'lsin.",
+                 "ru": "❌ Ник должен быть от 1 до 40 символов."},
+    "confirm_q": {"tj": "🔎 Лутфан бори дигар санҷед:\n\n🆔 ID: {id}\n👤 Никнейм: {nick}\n\nДуруст аст?",
+                  "uz": "🔎 Iltimos, yana bir bor tekshiring:\n\n🆔 ID: {id}\n👤 Nikneym: {nick}\n\nTo'g'rimi?",
+                  "ru": "🔎 Пожалуйста, проверьте ещё раз:\n\n🆔 ID: {id}\n👤 Ник: {nick}\n\nВсё верно?"},
+    "need_buttons": {"tj": "Тугмаро пахш кунед: ✅ ё ✏️", "uz": "Tugmani bosing: ✅ yoki ✏️",
+                     "ru": "Нажмите кнопку: ✅ или ✏️"},
+    "need_order": {"tj": "Аввал маҳсулот интихоб кунед, ID ва никро тасдиқ намоед, баъд скриншот фиристед.",
+                   "uz": "Avval mahsulotni tanlang, ID va nikni tasdiqlang, keyin skrinshot yuboring.",
+                   "ru": "Сначала выберите товар и подтвердите ID и ник, затем отправьте скриншот."},
     "need_start": {"tj": "Аввал /start пахш кунед", "uz": "Avval /start bosing", "ru": "Сначала нажмите /start"},
 }
 
@@ -187,11 +280,11 @@ def send_main_menu(uid, context: CallbackContext, welcome=False):
     lang = get_lang(uid)
     text = tx("welcome", lang) if welcome else tx("menu", lang)
     if lang == "tj":
-        kb = ReplyKeyboardMarkup([["🛒 Хариди алмазҳо", "🎫 Ваучерҳо"], ["📞 Поддержка", "🔁 /lang"]], resize_keyboard=True)
+        kb = ReplyKeyboardMarkup([["🛒 Хариди алмазҳо", "🎫 Ваучерҳо"], ["🌟 BR Card", "🦾 EVO рӯзона"], ["📞 Поддержка", "🔁 /lang"]], resize_keyboard=True)
     elif lang == "uz":
-        kb = ReplyKeyboardMarkup([["🛒 Almaz xaridi", "🎫 Vaucherlar"], ["📞 Support", "🔁 /lang"]], resize_keyboard=True)
+        kb = ReplyKeyboardMarkup([["🛒 Almaz xaridi", "🎫 Vaucherlar"], ["🌟 BR Card", "🦾 EVO kunlik"], ["📞 Support", "🔁 /lang"]], resize_keyboard=True)
     else:
-        kb = ReplyKeyboardMarkup([["🛒 Купить алмазы", "🎫 Ваучеры"], ["📞 Поддержка", "🔁 /lang"]], resize_keyboard=True)
+        kb = ReplyKeyboardMarkup([["🛒 Купить алмазы", "🎫 Ваучеры"], ["🌟 BR Card", "🦾 EVO на дни"], ["📞 Поддержка", "🔁 /lang"]], resize_keyboard=True)
     try:
         context.bot.send_message(chat_id=uid, text=text, reply_markup=kb)
     except Exception as e:
@@ -199,9 +292,22 @@ def send_main_menu(uid, context: CallbackContext, welcome=False):
 
 
 # ---------------- Text handler ----------------
-PKG_RE = re.compile(r"^(100|310|520|1060)\s*(💎|алмаз|almaz)?$", re.I)
-WEEK_WORDS = ("ҳафта", "hafta", "недел", "week")
-MONTH_WORDS = ("моҳ", "oy", "месяц", "month")
+PKG_RE = re.compile(r"^(25|100|310|520|1060|2180|5600)\s*(💎|алмаз|almaz)?$", re.I)
+
+L_VOUCH = {"tj": "🎫 Ваучерҳо", "uz": "🎫 Vaucherlar", "ru": "🎫 Ваучеры"}
+L_BACK = {"tj": "🔙 Бозгашт", "uz": "🔙 Orqaga", "ru": "🔙 Назад"}
+L_SHOT = {"tj": "📤 Скриншот фиристодам", "uz": "📤 Skreenshot yubordim", "ru": "📤 Отправил скриншот"}
+BTN_ESKHATA = "🏦 Eskhata"
+BTN_DCITY = "💳 DCity"
+CARD_NAMES = {"eskhata": "Eskhata Bank", "dcity": "DCity"}
+L_YES = {"tj": "✅ Ҳа, дуруст аст", "uz": "✅ Ha, to'g'ri", "ru": "✅ Да, верно"}
+L_NO = {"tj": "✏️ Не, ислоҳ мекунам", "uz": "✏️ Yo'q, tuzataman", "ru": "✏️ Нет, исправить"}
+MENU_LABELS = {"🛒 Хариди алмазҳо", "🎫 Ваучерҳо", "🌟 BR Card", "🦾 EVO рӯзона", "📞 Поддержка",
+               "🛒 Almaz xaridi", "🎫 Vaucherlar", "🦾 EVO kunlik", "📞 Support",
+               "🛒 Купить алмазы", "🎫 Ваучеры", "🦾 EVO на дни"}
+ORDER_PREFIXES = ("buy_", "voucher_", "brcard", "evo_")
+CUR = {"tj": "сомонӣ", "uz": "сом", "ru": "сом"}
+EVO_DAYS = {"tj": "рӯз", "uz": "kun", "ru": "дн."}
 
 
 def text_handler(update: Update, context: CallbackContext):
@@ -214,12 +320,34 @@ def text_handler(update: Update, context: CallbackContext):
         return
     lang = get_lang(uid)
 
+    # order flow (Free Fire ID / nickname / confirmation)
+    rec = users_db[str(uid)]
+    if "🔙" in txt or txt in MENU_LABELS or txt.startswith("🔁"):
+        rec["state"] = None  # leaving the order flow
+    if rec.get("state") and handle_order_flow(uid, context, txt, rec, lang):
+        return
+
     # back / language
     if "🔙" in txt:
         send_main_menu(uid, context)
         return
     if txt.startswith("🔁"):
         lang_cmd(update, context)
+        return
+
+    # card choice
+    if "eskhata" in low or "эсхата" in low or "dcity" in low:
+        rec = users_db.get(str(uid), {})
+        if not str(rec.get("last_action", "")).startswith(ORDER_PREFIXES) or not rec.get("ff_id"):
+            send_main_menu(uid, context)
+            return
+        key = "dcity" if "dcity" in low else "eskhata"
+        rec["card"] = key
+        write_json(USERS_FILE, users_db)
+        msg = {"tj": "✅ Корт интихоб шуд: {c}\nПас аз пардохт скриншот фиристед.",
+               "uz": "✅ Karta tanlandi: {c}\nTo'lovdan keyin skrin yuboring.",
+               "ru": "✅ Карта выбрана: {c}\nПосле оплаты отправьте скриншот."}[lang]
+        context.bot.send_message(chat_id=uid, text=msg.format(c=CARD_NAMES[key]))
         return
 
     # screenshot button -> ask for a photo
@@ -232,15 +360,27 @@ def text_handler(update: Update, context: CallbackContext):
         context.bot.send_message(chat_id=uid, text=f"📞 Поддержка:\n{SUPPORT_USERNAME}")
         return
 
-    # vouchers (check week/month before the generic voucher menu)
-    is_voucher_ctx = "🎫" in txt or low in ("1 hafta", "1 oy", "1 неделя", "1 месяц", "1 week", "1 month")
-    if is_voucher_ctx:
-        if any(w in low for w in WEEK_WORDS):
-            send_voucher(uid, context, "week")
-        elif re.search(r"(?<!\w)oy(?!\w)", low) or any(w in low for w in MONTH_WORDS):
-            send_voucher(uid, context, "month")
+    # vouchers: "🎫 90💎" / "🎫 450💎" / "🎫 2600💎" or the menu button
+    if "🎫" in txt:
+        m = re.search(r"\d+", txt)
+        if m and m.group(0) in VOUCHER_BY_NUM:
+            send_voucher(uid, context, VOUCHER_BY_NUM[m.group(0)])
         else:
             send_vouchers(uid, context)
+        return
+
+    # EVO: "🦾 3 рӯз" or the menu button
+    if "🦾" in txt:
+        m = re.search(r"\d+", txt)
+        if m and m.group(0) in EVO:
+            send_evo(uid, context, m.group(0))
+        else:
+            send_evo_menu(uid, context)
+        return
+
+    # BR Card
+    if txt.startswith("🌟") or "br card" in low:
+        send_item(uid, context, "brcard", "🌟 BR Card", BR_CARD_PRICE)
         return
 
     # buy menu
@@ -248,84 +388,126 @@ def text_handler(update: Update, context: CallbackContext):
         send_packages(uid, context)
         return
 
-    # packages
+    # diamond packages
     m = PKG_RE.match(txt)
     if m:
         send_package_detail(uid, context, m.group(1))
-        return
-    if "прокачка" in low or "prokachka" in low or low.startswith("1270") or txt.startswith("⚡"):
-        send_package_detail(uid, context, "1270")
         return
 
     context.bot.send_message(chat_id=uid, text=tx("fallback", lang))
 
 
-# ---------------- Package & voucher messages ----------------
+# ---------------- Menus & item messages ----------------
 def send_packages(uid, context: CallbackContext):
     lang = get_lang(uid)
     set_last_action(uid, "packages_menu")
+    head = {"tj": "💰 Нархи алмазҳо:", "uz": "💰 Almaz narxlari:", "ru": "💰 Цена алмазов:"}[lang]
+    lines = "\n".join(f"💠 {label} — {price} {CUR[lang]}" for price, label in DIAMONDS.values())
+    kb = ReplyKeyboardMarkup([["25💎", "100💎"], ["310💎", "520💎"], ["1060💎", "2180💎"],
+                              ["5600💎", L_VOUCH[lang]], [L_BACK[lang]]], resize_keyboard=True)
+    context.bot.send_message(chat_id=uid, text=f"{head}\n\n{lines}", reply_markup=kb)
+
+
+def send_item(uid, context, action, title, price):
+    """Start an order: first ask for the Free Fire ID."""
+    lang = get_lang(uid)
+    rec = users_db.setdefault(str(uid), {})
+    rec.update({"card": None, "ff_id": None, "ff_nick": None, "state": "await_id",
+                "pending": [action, title, price]})
+    set_last_action(uid, action)  # also saves users.json
+    context.bot.send_message(chat_id=uid, text=tx("ask_id", lang),
+                             reply_markup=ReplyKeyboardMarkup([[L_BACK[lang]]], resize_keyboard=True))
+
+
+def handle_order_flow(uid, context, txt, rec, lang):
+    """ID -> nickname -> confirmation. Returns True if the message was consumed."""
+    state = rec.get("state")
+    back_kb = ReplyKeyboardMarkup([[L_BACK[lang]]], resize_keyboard=True)
+    if state == "await_id":
+        digits = txt.replace(" ", "")
+        if re.fullmatch(r"\d{6,14}", digits):
+            rec["ff_id"] = digits
+            rec["state"] = "await_nick"
+            write_json(USERS_FILE, users_db)
+            context.bot.send_message(chat_id=uid, text=tx("ask_nick", lang), reply_markup=back_kb)
+        else:
+            context.bot.send_message(chat_id=uid, text=tx("bad_id", lang), reply_markup=back_kb)
+        return True
+    if state == "await_nick":
+        nick = txt.strip()
+        if 1 <= len(nick) <= 40:
+            rec["ff_nick"] = nick
+            rec["state"] = "await_confirm"
+            write_json(USERS_FILE, users_db)
+            kb = ReplyKeyboardMarkup([[L_YES[lang]], [L_NO[lang]], [L_BACK[lang]]], resize_keyboard=True)
+            context.bot.send_message(chat_id=uid, reply_markup=kb,
+                                     text=tx("confirm_q", lang).format(id=rec["ff_id"], nick=nick))
+        else:
+            context.bot.send_message(chat_id=uid, text=tx("bad_nick", lang), reply_markup=back_kb)
+        return True
+    if state == "await_confirm":
+        if txt.startswith("✅"):
+            rec["state"] = None
+            write_json(USERS_FILE, users_db)
+            action, title, price = rec["pending"]
+            show_payment(uid, context, action, title, price)
+        elif txt.startswith("✏️"):
+            rec.update({"ff_id": None, "ff_nick": None, "state": "await_id"})
+            write_json(USERS_FILE, users_db)
+            context.bot.send_message(chat_id=uid, text=tx("ask_id", lang), reply_markup=back_kb)
+        else:
+            context.bot.send_message(chat_id=uid, text=tx("need_buttons", lang))
+        return True
+    return False
+
+
+def show_payment(uid, context, action, title, price):
+    """Payment instructions (shown after the ID and nickname are confirmed)."""
+    lang = get_lang(uid)
+    cur = CUR[lang]
     if lang == "tj":
-        txt = ("💰 Нархи алмазҳо:\n\n💠 100💎 — 11 сомонӣ\n💠 310💎 — 31 сомонӣ\n💠 520💎 — 53 сомонӣ\n"
-               "💠 1060💎 — 103 сомонӣ\n⚡ 1270 (Прокачка) — 43 сомонӣ")
-        kb = ReplyKeyboardMarkup([["100💎", "310💎"], ["520💎", "1060💎"], ["⚡ Прокачка", "🎫 Ваучерҳо"], ["🔙 Бозгашт"]], resize_keyboard=True)
+        text = f"🔹 {title} — {price} {cur}\n💳 Рақам: {PAY_NUMBER}\nКортро интихоб кунед, пас аз пардохт скриншот фиристед."
     elif lang == "uz":
-        txt = "💰 Almaz narxlari:\n\n100💎 — 11 сом\n310💎 — 31 сом\n520💎 — 53 сом\n1060💎 — 103 сом\n1270 — 43 сом"
-        kb = ReplyKeyboardMarkup([["100💎", "310💎"], ["520💎", "1060💎"], ["⚡ Prokachka", "🎫 Vaucherlar"], ["🔙 Orqaga"]], resize_keyboard=True)
+        text = f"🔹 {title} — {price} {cur}\n💳 To'lov: {PAY_NUMBER}\nKartani tanlang, to'lovdan keyin skrin yuboring."
     else:
-        txt = "💰 Цена алмазов:\n\n100💎 — 11 сом\n310💎 — 31 сом\n520💎 — 53 сом\n1060💎 — 103 сом\n1270 — 43 сом"
-        kb = ReplyKeyboardMarkup([["100💎", "310💎"], ["520💎", "1060💎"], ["⚡ Прокачка", "🎫 Ваучеры"], ["🔙 Назад"]], resize_keyboard=True)
-    context.bot.send_message(chat_id=uid, text=txt, reply_markup=kb)
+        text = f"🔹 {title} — {price} {cur}\n💳 Номер: {PAY_NUMBER}\nВыберите карту, после оплаты отправьте скриншот."
+    kb = ReplyKeyboardMarkup([[BTN_ESKHATA, BTN_DCITY], [L_SHOT[lang]], [L_BACK[lang]]], resize_keyboard=True)
+    context.bot.send_message(chat_id=uid, text=text, reply_markup=kb)
 
 
 def send_package_detail(uid, context, code):
-    lang = get_lang(uid)
-    name = f"{code} алмаз" if code != "1270" else "1270 алмаз (Прокачка)"
-    price = PRICES.get(code, 0)
-    set_last_action(uid, f"buy_{code}")
-    if lang == "tj":
-        text = f"🔹 {name} — {price} сомонӣ\n💳 Рақам: {PAY_NUMBER}\nПас аз пардохт — скриншот фиристед."
-        kb = ReplyKeyboardMarkup([["📤 Скриншот фиристодам", "🎫 Ваучерҳо"], ["🔙 Бозгашт"]], resize_keyboard=True)
-    elif lang == "uz":
-        text = f"🔹 {name} — {price} сом\n💳 To'lov: {PAY_NUMBER}\nTo'lovdan keyin skrin yuboring."
-        kb = ReplyKeyboardMarkup([["📤 Skreenshot yubordim", "🎫 Vaucherlar"], ["🔙 Orqaga"]], resize_keyboard=True)
-    else:
-        text = f"🔹 {name} — {price} сом\n💳 Номер: {PAY_NUMBER}\nПосле оплаты отправьте скриншот."
-        kb = ReplyKeyboardMarkup([["📤 Отправил скриншот", "🎫 Ваучеры"], ["🔙 Назад"]], resize_keyboard=True)
-    context.bot.send_message(chat_id=uid, text=text, reply_markup=kb)
+    price, label = DIAMONDS[code]
+    send_item(uid, context, f"buy_{code}", f"💎 {label}", price)
 
 
 def send_vouchers(uid, context: CallbackContext):
     lang = get_lang(uid)
     set_last_action(uid, "vouchers_menu")
-    if lang == "tj":
-        txt = f"🎫 Ваучерҳо:\n1 ҳафта — {VOUCHER_WEEK} сомонӣ\n1 моҳ — {VOUCHER_MONTH} сомонӣ"
-        kb = ReplyKeyboardMarkup([["🎫 1 ҳафталик ваучер", "🎫 1 моҳлик ваучер"], ["🔙 Бозгашт"]], resize_keyboard=True)
-    elif lang == "uz":
-        txt = f"🎫 Vaucherlar:\n1 hafta — {VOUCHER_WEEK} сом\n1 oy — {VOUCHER_MONTH} сом"
-        kb = ReplyKeyboardMarkup([["🎫 1 hafta", "🎫 1 oy"], ["🔙 Orqaga"]], resize_keyboard=True)
-    else:
-        txt = f"🎫 Ваучеры:\n1 неделя — {VOUCHER_WEEK} сом\n1 месяц — {VOUCHER_MONTH} сом"
-        kb = ReplyKeyboardMarkup([["🎫 1 неделя", "🎫 1 месяц"], ["🔙 Назад"]], resize_keyboard=True)
-    context.bot.send_message(chat_id=uid, text=txt, reply_markup=kb)
+    head = {"tj": "🎫 Ваучерҳо:", "uz": "🎫 Vaucherlar:", "ru": "🎫 Ваучеры:"}[lang]
+    lines = "\n".join(f"{label} ({per[lang]}) — {price} {CUR[lang]}" for price, label, per in VOUCHERS.values())
+    kb = ReplyKeyboardMarkup([["🎫 90💎", "🎫 450💎"], ["🎫 2600💎"], [L_BACK[lang]]], resize_keyboard=True)
+    context.bot.send_message(chat_id=uid, text=f"{head}\n{lines}", reply_markup=kb)
 
 
 def send_voucher(uid, context: CallbackContext, which):
-    set_last_action(uid, f"voucher_{which}")
     lang = get_lang(uid)
-    price = VOUCHER_WEEK if which == "week" else VOUCHER_MONTH
-    if lang == "tj":
-        period = "1 ҳафта" if which == "week" else "1 моҳ"
-        text = f"🎫 Ваучер ({period}) — {price} сомонӣ\n💳 Рақам: {PAY_NUMBER}\nПас аз пардохт скриншот фиристед."
-        kb = ReplyKeyboardMarkup([["📤 Скриншот фиристодам", "🔙 Бозгашт"]], resize_keyboard=True)
-    elif lang == "uz":
-        period = "1 hafta" if which == "week" else "1 oy"
-        text = f"🎫 Vaucher ({period}) — {price} сом\n💳 To'lov: {PAY_NUMBER}\nTo'lovdan keyin skrin yuboring."
-        kb = ReplyKeyboardMarkup([["📤 Skreenshot yubordim", "🔙 Orqaga"]], resize_keyboard=True)
-    else:
-        period = "1 неделя" if which == "week" else "1 месяц"
-        text = f"🎫 Ваучер ({period}) — {price} сом\n💳 Номер: {PAY_NUMBER}\nПосле оплаты отправьте скриншот."
-        kb = ReplyKeyboardMarkup([["📤 Отправил скриншот", "🔙 Назад"]], resize_keyboard=True)
-    context.bot.send_message(chat_id=uid, text=text, reply_markup=kb)
+    price, label, per = VOUCHERS[which]
+    send_item(uid, context, f"voucher_{which}", f"🎫 {label} ({per[lang]})", price)
+
+
+def send_evo_menu(uid, context: CallbackContext):
+    lang = get_lang(uid)
+    set_last_action(uid, "evo_menu")
+    head = {"tj": "🦾 EVO рӯзона:", "uz": "🦾 EVO kunlik:", "ru": "🦾 EVO на дни:"}[lang]
+    lines = "\n".join(f"{d} {EVO_DAYS[lang]} — {p} {CUR[lang]}" for d, p in EVO.items())
+    kb = ReplyKeyboardMarkup([[f"🦾 3 {EVO_DAYS[lang]}", f"🦾 7 {EVO_DAYS[lang]}"],
+                              [f"🦾 30 {EVO_DAYS[lang]}"], [L_BACK[lang]]], resize_keyboard=True)
+    context.bot.send_message(chat_id=uid, text=f"{head}\n{lines}", reply_markup=kb)
+
+
+def send_evo(uid, context: CallbackContext, days):
+    lang = get_lang(uid)
+    send_item(uid, context, f"evo_{days}", f"🦾 EVO — {days} {EVO_DAYS[lang]}", EVO[days])
 
 
 # ---------------- Screenshot handler ----------------
@@ -335,29 +517,35 @@ def photo_handler(update: Update, context: CallbackContext):
     user = update.effective_user
     lang = get_lang(uid)
     last = users_db.get(str(uid), {}).get("last_action", "unknown")
+    rec = users_db.get(str(uid), {})
+    if rec.get("state") or not rec.get("ff_id") or not str(last).startswith(ORDER_PREFIXES):
+        context.bot.send_message(chat_id=uid, text=tx("need_order", lang))
+        return
     ts = int(time.time())
     username = f"@{user.username}" if user.username else user.first_name
+    card = CARD_NAMES.get(users_db.get(str(uid), {}).get("card"), "не выбрана")
     caption = (f"🆕 Скриншот от {username}\nUser ID: {uid}\n"
-               f"Last action: {last}\nTime: {utc_str(ts)}")
+               f"Last action: {last}\n🎮 FF ID: {rec.get('ff_id')}\n👤 Ник: {rec.get('ff_nick')}\n"
+               f"💳 Карта: {card}\nTime: {utc_str(ts)}")
     try:
         context.bot.send_photo(chat_id=ADMIN_ID, photo=update.message.photo[-1].file_id, caption=caption)
     except Exception as e:
         logger.exception("send to admin failed: %s", e)
     log_sale({"user_id": uid, "username": user.username or user.first_name,
-              "action": last, "timestamp": ts, "status": "pending"})
+              "action": last, "card": card, "ff_id": rec.get("ff_id"), "ff_nick": rec.get("ff_nick"),
+              "timestamp": ts, "status": "pending"})
     context.bot.send_message(chat_id=uid, text=tx("photo_sent", lang))
 
 
 # ---------------- Admin: /ok* ----------------
-OK_MAP = {
-    "/ok100": ("buy_100", "✅ 100 алмаз тасдиқ шуд!"),
-    "/ok310": ("buy_310", "✅ 310 алмаз тасдиқ шуд!"),
-    "/ok520": ("buy_520", "✅ 520 алмаз тасдиқ шуд!"),
-    "/ok1060": ("buy_1060", "✅ 1060 алмаз тасдиқ шуд!"),
-    "/ok1270": ("buy_1270", "⚡ Прокачка тасдиқ шуд!"),
-    "/ok_week": ("voucher_week", "🎫 1 ҳафталик ваучер тасдиқ шуд!"),
-    "/ok_month": ("voucher_month", "🎫 1 моҳлик ваучер тасдиқ шуд!"),
-}
+OK_MAP = {}
+for _c, (_p, _l) in DIAMONDS.items():
+    OK_MAP[f"/ok{_c}"] = (f"buy_{_c}", f"✅ {_l} тасдиқ шуд!")
+for _k, (_p, _l, _per) in VOUCHERS.items():
+    OK_MAP[f"/ok_{_k}"] = (f"voucher_{_k}", f"🎫 {_l} ваучер тасдиқ шуд!")
+OK_MAP["/ok_brcard"] = ("brcard", "🌟 BR Card тасдиқ шуд!")
+for _d in EVO:
+    OK_MAP[f"/ok_evo{_d}"] = (f"evo_{_d}", f"🦾 EVO {_d} рӯз тасдиқ шуд!")
 
 
 def admin_ok(update: Update, context: CallbackContext):
@@ -407,13 +595,7 @@ def admin_ok(update: Update, context: CallbackContext):
 
 # ---------------- Admin stats ----------------
 def action_amount(a):
-    if a.startswith("buy_"):
-        return PRICES.get(a.split("_", 1)[1], 0)
-    if a == "voucher_week":
-        return VOUCHER_WEEK
-    if a == "voucher_month":
-        return VOUCHER_MONTH
-    return 0
+    return PRICE_BY_ACTION.get(a, 0)
 
 
 def stats_cmd(update: Update, context: CallbackContext):
@@ -446,12 +628,45 @@ def sales_cmd(update: Update, context: CallbackContext):
         return
     out = "🧾 Last sales:\n"
     for s in reversed(sales_db[-20:]):
-        out += f"{utc_str(s['timestamp'], '%Y-%m-%d %H:%M')} | uid:{s['user_id']} | {s['action']} | {s['status']}\n"
+        out += f"{utc_str(s['timestamp'], '%Y-%m-%d %H:%M')} | uid:{s['user_id']} | {s['action']} | {s.get('card', '-')} | {s['status']}\n"
     update.message.reply_text(out)
+
+
+# ---------------- Keep-alive web server (for Render web service) ----------------
+from threading import Thread
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+
+class _PingHandler(BaseHTTPRequestHandler):
+    def _ok(self, body=True):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.end_headers()
+        if body:
+            self.wfile.write(b"Bot is running")
+
+    def do_GET(self):
+        self._ok()
+
+    def do_HEAD(self):  # UptimeRobot often uses HEAD
+        self._ok(body=False)
+
+    def log_message(self, *args):
+        pass
+
+
+def start_web_server():
+    port = os.getenv("PORT")  # Render sets this automatically
+    if not port:
+        return
+    server = HTTPServer(("0.0.0.0", int(port)), _PingHandler)
+    Thread(target=server.serve_forever, daemon=True).start()
+    logger.info("Web server listening on port %s", port)
 
 
 # ---------------- Run ----------------
 def main():
+    start_web_server()
     updater = Updater(BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
     dp.add_handler(CommandHandler("start", start_cmd))
