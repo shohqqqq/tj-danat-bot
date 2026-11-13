@@ -165,7 +165,7 @@ def anti_spam(func):
             now = time.time()
             if now - last_ts.get(uid, 0) < SPAM_INTERVAL:
                 try:
-                    update.message.reply_text("⏳ Илтимос, бир неча сониядан кейин қайта уриниб кўринг.")
+                    update.message.reply_text(tx("spam", get_lang(uid)))
                 except Exception:
                     pass
                 return
@@ -211,6 +211,9 @@ TEXTS = {
                    "uz": "Avval mahsulotni tanlang, ID va nikni tasdiqlang, keyin skrinshot yuboring.",
                    "ru": "Сначала выберите товар и подтвердите ID и ник, затем отправьте скриншот."},
     "need_start": {"tj": "Аввал /start пахш кунед", "uz": "Avval /start bosing", "ru": "Сначала нажмите /start"},
+    "spam": {"tj": "⏳ Лутфан, якчанд сония пас боз кӯшиш кунед.",
+             "uz": "⏳ Iltimos, bir necha soniyadan keyin qayta urinib ko'ring.",
+             "ru": "⏳ Пожалуйста, повторите через несколько секунд."},
 }
 
 
@@ -280,7 +283,7 @@ def send_main_menu(uid, context: CallbackContext, welcome=False):
     lang = get_lang(uid)
     text = tx("welcome", lang) if welcome else tx("menu", lang)
     if lang == "tj":
-        kb = ReplyKeyboardMarkup([["🛒 Хариди алмазҳо", "🎫 Ваучерҳо"], ["🌟 BR Card", "🦾 EVO рӯзона"], ["📞 Поддержка", "🔁 /lang"]], resize_keyboard=True)
+        kb = ReplyKeyboardMarkup([["🛒 Хариди алмазҳо", "🎫 Ваучерҳо"], ["🌟 BR Card", "🦾 EVO рӯзона"], ["📞 Дастгирӣ", "🔁 /lang"]], resize_keyboard=True)
     elif lang == "uz":
         kb = ReplyKeyboardMarkup([["🛒 Almaz xaridi", "🎫 Vaucherlar"], ["🌟 BR Card", "🦾 EVO kunlik"], ["📞 Support", "🔁 /lang"]], resize_keyboard=True)
     else:
@@ -296,17 +299,18 @@ PKG_RE = re.compile(r"^(25|100|310|520|1060|2180|5600)\s*(💎|алмаз|almaz)
 
 L_VOUCH = {"tj": "🎫 Ваучерҳо", "uz": "🎫 Vaucherlar", "ru": "🎫 Ваучеры"}
 L_BACK = {"tj": "🔙 Бозгашт", "uz": "🔙 Orqaga", "ru": "🔙 Назад"}
-L_SHOT = {"tj": "📤 Скриншот фиристодам", "uz": "📤 Skreenshot yubordim", "ru": "📤 Отправил скриншот"}
+L_SHOT = {"tj": "📤 Скриншот фиристодам", "uz": "📤 Skrinshot yubordim", "ru": "📤 Отправил скриншот"}
 BTN_ESKHATA = "🏦 Eskhata"
 BTN_DCITY = "💳 DCity"
 CARD_NAMES = {"eskhata": "Eskhata Bank", "dcity": "DCity"}
 L_YES = {"tj": "✅ Ҳа, дуруст аст", "uz": "✅ Ha, to'g'ri", "ru": "✅ Да, верно"}
 L_NO = {"tj": "✏️ Не, ислоҳ мекунам", "uz": "✏️ Yo'q, tuzataman", "ru": "✏️ Нет, исправить"}
-MENU_LABELS = {"🛒 Хариди алмазҳо", "🎫 Ваучерҳо", "🌟 BR Card", "🦾 EVO рӯзона", "📞 Поддержка",
+MENU_LABELS = {"🛒 Хариди алмазҳо", "🎫 Ваучерҳо", "🌟 BR Card", "🦾 EVO рӯзона", "📞 Дастгирӣ", "📞 Поддержка",
                "🛒 Almaz xaridi", "🎫 Vaucherlar", "🦾 EVO kunlik", "📞 Support",
                "🛒 Купить алмазы", "🎫 Ваучеры", "🦾 EVO на дни"}
 ORDER_PREFIXES = ("buy_", "voucher_", "brcard", "evo_")
-CUR = {"tj": "сомонӣ", "uz": "сом", "ru": "сом"}
+CUR = {"tj": "сомонӣ", "uz": "so'm", "ru": "сом"}
+SUPPORT_TITLE = {"tj": "📞 Дастгирӣ:", "uz": "📞 Support:", "ru": "📞 Поддержка:"}
 EVO_DAYS = {"tj": "рӯз", "uz": "kun", "ru": "дн."}
 
 
@@ -316,7 +320,7 @@ def text_handler(update: Update, context: CallbackContext):
     low = txt.lower()
 
     if str(uid) not in users_db or "lang" not in users_db[str(uid)]:
-        update.message.reply_text(tx("need_start", "ru") + " / Avval /start bosing")
+        update.message.reply_text(" / ".join(tx("need_start", l) for l in ("tj", "uz", "ru")))
         return
     lang = get_lang(uid)
 
@@ -357,7 +361,7 @@ def text_handler(update: Update, context: CallbackContext):
 
     # support
     if txt.startswith("📞") or "поддержк" in low or "support" in low:
-        context.bot.send_message(chat_id=uid, text=f"📞 Поддержка:\n{SUPPORT_USERNAME}")
+        context.bot.send_message(chat_id=uid, text=f"{SUPPORT_TITLE[lang]}\n{SUPPORT_USERNAME}")
         return
 
     # vouchers: "🎫 90💎" / "🎫 450💎" / "🎫 2600💎" or the menu button
@@ -524,33 +528,140 @@ def photo_handler(update: Update, context: CallbackContext):
     ts = int(time.time())
     username = f"@{user.username}" if user.username else user.first_name
     card = CARD_NAMES.get(users_db.get(str(uid), {}).get("card"), "не выбрана")
-    caption = (f"🆕 Скриншот от {username}\nUser ID: {uid}\n"
-               f"Last action: {last}\n🎮 FF ID: {rec.get('ff_id')}\n👤 Ник: {rec.get('ff_nick')}\n"
-               f"💳 Карта: {card}\nTime: {utc_str(ts)}")
-    try:
-        context.bot.send_photo(chat_id=ADMIN_ID, photo=update.message.photo[-1].file_id, caption=caption)
-    except Exception as e:
-        logger.exception("send to admin failed: %s", e)
-    log_sale({"user_id": uid, "username": user.username or user.first_name,
+    sid = max([x.get("id", 0) for x in sales_db] + [0]) + 1
+    log_sale({"id": sid, "user_id": uid, "username": user.username or user.first_name,
               "action": last, "card": card, "ff_id": rec.get("ff_id"), "ff_nick": rec.get("ff_nick"),
               "timestamp": ts, "status": "pending"})
+    expected = PRICE_BY_ACTION.get(last)
+    amount_line = f"💰 Сумма: {expected} сом\n" if expected else ""
+    caption = (f"🆕 Скриншот от {username}\n🧾 Заказ #{sid}\nUser ID: {uid}\n"
+               f"📦 Товар: {item_label(last, 'ru')}\n{amount_line}🎮 FF ID: {rec.get('ff_id')}\n👤 Ник: {rec.get('ff_nick')}\n"
+               f"💳 Карта: {card}\n🕒 Время: {utc_str(ts)}")
+    try:
+        context.bot.send_photo(chat_id=ADMIN_ID, photo=update.message.photo[-1].file_id,
+                               caption=caption, reply_markup=admin_kb(sid))
+    except Exception as e:
+        logger.exception("send to admin failed: %s", e)
     context.bot.send_message(chat_id=uid, text=tx("photo_sent", lang))
 
 
 # ---------------- Admin: /ok* ----------------
-OK_MAP = {}
-for _c, (_p, _l) in DIAMONDS.items():
-    OK_MAP[f"/ok{_c}"] = (f"buy_{_c}", f"✅ {_l} тасдиқ шуд!")
-for _k, (_p, _l, _per) in VOUCHERS.items():
-    OK_MAP[f"/ok_{_k}"] = (f"voucher_{_k}", f"🎫 {_l} ваучер тасдиқ шуд!")
-OK_MAP["/ok_brcard"] = ("brcard", "🌟 BR Card тасдиқ шуд!")
+OK_MAP = {}  # command -> action key (the customer's message is built per language by confirm_text)
+for _c in DIAMONDS:
+    OK_MAP[f"/ok{_c}"] = f"buy_{_c}"
+for _k in VOUCHERS:
+    OK_MAP[f"/ok_{_k}"] = f"voucher_{_k}"
+OK_MAP["/ok_brcard"] = "brcard"
 for _d in EVO:
-    OK_MAP[f"/ok_evo{_d}"] = (f"evo_{_d}", f"🦾 EVO {_d} рӯз тасдиқ шуд!")
+    OK_MAP[f"/ok_evo{_d}"] = f"evo_{_d}"
+
+
+def item_label(action, lang="ru"):
+    """Readable product name for an action key."""
+    if action.startswith("buy_") and action[4:] in DIAMONDS:
+        return f"💎 {DIAMONDS[action[4:]][1]}"
+    if action.startswith("voucher_") and action[8:] in VOUCHERS:
+        _, label, per = VOUCHERS[action[8:]]
+        return f"🎫 {label} ({per[lang]})"
+    if action == "brcard":
+        return "🌟 BR Card"
+    if action.startswith("evo_") and action[4:] in EVO:
+        return f"🦾 EVO — {action[4:]} {EVO_DAYS[lang]}"
+    return action
+
+
+CONFIRM_TEXT = {"tj": "✅ {i} тасдиқ шуд!", "uz": "✅ {i} tasdiqlandi!", "ru": "✅ {i} подтверждено!"}
+
+
+def confirm_text(action, lang):
+    return CONFIRM_TEXT[lang].format(i=item_label(action, lang))
+
+
+REJECT_REASONS = {
+    "1": {"tj": "маблағи пардохт нокифоя аст", "uz": "to'lov summasi yetarli emas", "ru": "сумма оплаты недостаточна"},
+    "2": {"tj": "скриншот нодуруст аст", "uz": "skrinshot noto'g'ri", "ru": "скриншот неверный"},
+    "3": {"tj": "пардохт ёфт нашуд", "uz": "to'lov topilmadi", "ru": "платёж не найден"},
+}
+REJECT_TEXT = {"tj": "❌ Фармоиши шумо рад шуд: {r}.\n📞 {s}",
+               "uz": "❌ Buyurtmangiz rad etildi: {r}.\n📞 {s}",
+               "ru": "❌ Ваш заказ отклонён: {r}.\n📞 {s}"}
+
+
+def admin_kb(sid):
+    return InlineKeyboardMarkup([[InlineKeyboardButton("✅ Подтвердить", callback_data=f"ok_{sid}"),
+                                  InlineKeyboardButton("❌ Отклонить", callback_data=f"no_{sid}")]])
+
+
+def reject_kb(sid):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Сумма не хватает", callback_data=f"why_{sid}_1")],
+        [InlineKeyboardButton("Скриншот неверный", callback_data=f"why_{sid}_2")],
+        [InlineKeyboardButton("Платёж не найден", callback_data=f"why_{sid}_3")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data=f"back_{sid}")],
+    ])
+
+
+def admin_cb(update: Update, context: CallbackContext):
+    q = update.callback_query
+    if q.from_user.id != ADMIN_ID:
+        q.answer("Нет доступа", show_alert=True)
+        return
+    parts = q.data.split("_")
+    kind, sid = parts[0], int(parts[1])
+    sale = next((x for x in sales_db if x.get("id") == sid), None)
+    if not sale:
+        q.answer("Заказ не найден", show_alert=True)
+        return
+    if kind in ("ok", "no", "why") and sale.get("status") != "pending":
+        q.answer(f"Уже обработан: {sale.get('status')}", show_alert=True)
+        try:
+            q.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        return
+    caption = q.message.caption or ""
+    uid = sale["user_id"]
+    try:
+        if kind == "no":
+            q.answer()
+            q.edit_message_reply_markup(reply_markup=reject_kb(sid))
+        elif kind == "back":
+            q.answer()
+            q.edit_message_reply_markup(reply_markup=admin_kb(sid))
+        elif kind == "ok":
+            msg = confirm_text(sale.get("action", ""), get_lang(uid))
+            try:
+                context.bot.send_message(chat_id=uid, text=f"{msg}\n🧾 #{sid}")
+            except Exception as e:
+                q.answer(f"Не отправлено клиенту: {e}", show_alert=True)
+                return
+            sale.update({"status": "confirmed", "confirmed_by": ADMIN_ID,
+                         "confirmed_at": int(time.time()), "confirm_msg": msg})
+            write_json(SALES_FILE, sales_db)
+            q.answer("Подтверждено ✅")
+            q.edit_message_caption(caption=caption + "\n\n✅ ПОДТВЕРЖДЕНО", reply_markup=None)
+        elif kind == "why":
+            code = parts[2]
+            lang = get_lang(uid)
+            text = REJECT_TEXT[lang].format(r=REJECT_REASONS[code][lang], s=SUPPORT_USERNAME)
+            try:
+                context.bot.send_message(chat_id=uid, text=f"{text}\n🧾 #{sid}")
+            except Exception as e:
+                q.answer(f"Не отправлено клиенту: {e}", show_alert=True)
+                return
+            sale.update({"status": "rejected", "rejected_by": ADMIN_ID, "reject_reason": code,
+                         "rejected_at": int(time.time())})
+            write_json(SALES_FILE, sales_db)
+            q.answer("Отклонено ❌")
+            q.edit_message_caption(caption=caption + f"\n\n❌ ОТКЛОНЕНО: {REJECT_REASONS[code]['ru']}",
+                                   reply_markup=None)
+    except Exception:
+        logger.exception("admin_cb error")
 
 
 def admin_ok(update: Update, context: CallbackContext):
     if update.effective_user.id != ADMIN_ID:
-        update.message.reply_text("Сизда бу буйруқни ишлатиш ҳуқуқи йўқ.")
+        update.message.reply_text("Нет доступа.")
         return
     parts = update.message.text.strip().split()
     cmd = parts[0].split("@")[0].lower()
@@ -571,12 +682,13 @@ def admin_ok(update: Update, context: CallbackContext):
                 except Exception:
                     target = None
     if not target:
-        update.message.reply_text("Илтимос user ID нишон диҳед. Мисол: /ok100 123456789")
+        update.message.reply_text("Укажите ID пользователя или ответьте на скриншот. Пример: /ok100 123456789")
         return
     if cmd not in OK_MAP:
-        update.message.reply_text("Номаълум буйруқ. Мисол: /ok100, /ok_week")
+        update.message.reply_text("Неизвестная команда. Пример: /ok100, /ok_week")
         return
-    action, resp = OK_MAP[cmd]
+    action = OK_MAP[cmd]
+    resp = confirm_text(action, get_lang(target))
     try:
         context.bot.send_message(chat_id=target, text=resp)
         for s in reversed(sales_db):
@@ -588,9 +700,9 @@ def admin_ok(update: Update, context: CallbackContext):
                 s["confirm_msg"] = resp
                 break
         write_json(SALES_FILE, sales_db)
-        update.message.reply_text(f"Хабар юборилди: {resp}")
+        update.message.reply_text(f"Отправлено клиенту: {resp}")
     except Exception as e:
-        update.message.reply_text(f"Хатолик: {e}")
+        update.message.reply_text(f"Ошибка: {e}")
 
 
 # ---------------- Admin stats ----------------
@@ -600,7 +712,7 @@ def action_amount(a):
 
 def stats_cmd(update: Update, context: CallbackContext):
     if update.effective_user.id != ADMIN_ID:
-        update.message.reply_text("Сизда ҳуқуқ йўқ")
+        update.message.reply_text("Нет доступа.")
         return
     income = 0
     counts = {}
@@ -609,7 +721,7 @@ def stats_cmd(update: Update, context: CallbackContext):
         a = s.get("action", "")
         income += action_amount(a)
         counts[a] = counts.get(a, 0) + 1
-    text = f"📊 Total income: {income} сом\nConfirmed records: {len(confirmed)}\n"
+    text = f"📊 Общий доход: {income} сом\nПодтверждено заказов: {len(confirmed)}\n"
     for k, v in counts.items():
         text += f"{k}: {v}\n"
     update.message.reply_text(text)
@@ -617,18 +729,18 @@ def stats_cmd(update: Update, context: CallbackContext):
 
 def users_cmd(update: Update, context: CallbackContext):
     if update.effective_user.id != ADMIN_ID:
-        update.message.reply_text("Сизда ҳуқуқ йўқ")
+        update.message.reply_text("Нет доступа.")
         return
-    update.message.reply_text(f"👥 Users in DB: {len(users_db)}")
+    update.message.reply_text(f"👥 Пользователей: {len(users_db)}")
 
 
 def sales_cmd(update: Update, context: CallbackContext):
     if update.effective_user.id != ADMIN_ID:
-        update.message.reply_text("Сизда ҳуқуқ йўқ")
+        update.message.reply_text("Нет доступа.")
         return
-    out = "🧾 Last sales:\n"
+    out = "🧾 Последние заказы:\n"
     for s in reversed(sales_db[-20:]):
-        out += f"{utc_str(s['timestamp'], '%Y-%m-%d %H:%M')} | uid:{s['user_id']} | {s['action']} | {s.get('card', '-')} | {s['status']}\n"
+        out += f"#{s.get('id', '-')} {utc_str(s['timestamp'], '%Y-%m-%d %H:%M')} | uid:{s['user_id']} | {s['action']} | {s.get('card', '-')} | {s['status']}\n"
     update.message.reply_text(out)
 
 
@@ -672,6 +784,7 @@ def main():
     dp.add_handler(CommandHandler("start", start_cmd))
     dp.add_handler(CommandHandler("lang", lang_cmd))
     dp.add_handler(CallbackQueryHandler(lang_cb, pattern="^lang_"))
+    dp.add_handler(CallbackQueryHandler(admin_cb, pattern=r"^(ok|no|why|back)_\d+"))
     dp.add_handler(CommandHandler(list(c.lstrip("/") for c in OK_MAP), admin_ok))
     dp.add_handler(CommandHandler("stats", stats_cmd))
     dp.add_handler(CommandHandler("users", users_cmd))
